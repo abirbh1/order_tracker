@@ -1,0 +1,72 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: order-tracker-errors
+    folder: Order Tracker
+    interval: 30s
+    rules:
+      - uid: order-lookup-5xx
+        title: Order lookup 5xx responses
+        condition: C
+        data:
+          # 5xx lookups per route over the last 5 minutes. The second half returns 0 for every
+          # route that had traffic but no 5xx, so quiet periods evaluate to Normal instead of No data.
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum by (http_route) (increase(order_lookup_requests_total{job="order-tracker", http_response_status_code=~"5.."}[5m]))
+                or
+                sum by (http_route) (increase(order_lookup_requests_total{job="order-tracker"}[5m])) * 0
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: replaceNN
+                replaceWithValue: 0
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+        # No lookup traffic at all in the window is not an error.
+        noDataState: OK
+        # If Prometheus can't be queried, surface it as an error instead of hiding it.
+        execErrState: Error
+        for: 1m
+        labels:
+          severity: critical
+          service: order-tracker
+        annotations:
+          summary: "5xx responses on GET {{ $labels.http_route }}"
+          description: >-
+            About {{ printf "%.0f" $values.B.Value }} order lookups returned a 5xx status on
+            GET {{ $labels.http_route }} in the last 5 minutes.
+            Dashboard: {{ externalURL }}d/order-tracker-requests?viewPanel=6
+          endpoint: "GET {{ $labels.http_route }}"
+          time_window: 5m
+          dashboard: "{{ externalURL }}d/order-tracker-requests?viewPanel=6"
+          __dashboardUid__: order-tracker-requests
+          __panelId__: "6"
+        notification_settings:
+          receiver: incident-response
+          group_by: [alertname, http_route]
+          group_wait: 10s
+          group_interval: 1m
+          repeat_interval: 4h
+        isPaused: false
